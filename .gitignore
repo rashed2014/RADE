@@ -1,0 +1,59 @@
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+*.ipynb_checkpoints/
+.ipynb_checkpoints/*
+
+# Python checkpoint files
+*-checkpoint.py
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+env/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+*.ipynb_checkpoints/
+
+# Model checkpoints
+*.ckpt
+checkpoints/
+*.h5
+*.pt
+*.pth
+*.bin
+
+# Output files and directories
+output/
+*.csv
+*.json
+*.log
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Temporary and backup files
+*.tmp
+*.swp
+*.bak
+
+# IDE-specific files
+.vscode/
+.idea/
+
+# Logs and coverage reports
+*.log
+coverage/
+*.cover
+*.gcno
+*.gcda
+
+# Files created by Python tooling
+pip-log.txt
+.env
+#ignore tmp
+utils/azure_doc_intel.py

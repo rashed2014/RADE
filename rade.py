@@ -41,9 +41,9 @@ class RetrievedPage:
 class RADE:
     def __init__(
         self,
-        retrieval_model_name: str = "../colpali_model_v1.3",
+        retrieval_model_name: str = "vidore/colpali-v1.3",
         qa_model_name: str = "deepset/roberta-base-squad2",  
-        entity_extraction_model: str = "../gliner_model",
+        entity_extraction_model: str = "knowledgator/gliner-multitask-large-v0.5",
         max_pages: int = 4,
         use_approximate_index: bool = True,
         batch_size: int = 4,
@@ -54,10 +54,16 @@ class RADE:
         self.use_approximate_index = use_approximate_index
         self.batch_size = batch_size
         
-        device_map = {
-            "retrieval": "cuda:0",  
-            "qa": "cuda:1"          
-        }
+        if torch.cuda.device_count() > 1:
+            device_map = {
+                "retrieval": "cuda:0",  
+                "qa": "cuda:1"          
+            }
+        else:
+            device_map = {
+                "retrieval": "cuda",  
+                "qa": "cuda"          
+            }
         print(f"Using device map: {device_map}")
 
         print("Initializing retrieval model...")

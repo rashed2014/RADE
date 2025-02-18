@@ -56,4 +56,4 @@ coverage/
 pip-log.txt
 .env
 #ignore tmp
-utils/azure_doc_intel.py
+.tmp

@@ -4,7 +4,7 @@ from tqdm import tqdm
 from transformers import (
     AutoProcessor,
     AutoConfig,
-    AutoModelForSequenceClassification, 
+    AutoModelForQuestionAnswering, 
     AutoTokenizer, 
     pipeline
 )
@@ -38,54 +38,113 @@ class RetrievedPage:
     score: float
 
 #define the RADE class
+
 class RADE:
     def __init__(
         self,
         retrieval_model_name: str = "vidore/colpali-v1.3",
-        qa_model_name: str = "deepset/roberta-base-squad2",  
+        qa_model_name: str = "deepset/roberta-large-squad2",  
         entity_extraction_model: str = "knowledgator/gliner-multitask-large-v0.5",
         max_pages: int = 4,
         use_approximate_index: bool = True,
         batch_size: int = 4,
         use_flash_attention: bool = False,  
-    ):
-        """Initialize M3DOCRAG framework with optimized multi-GPU support."""
+        ):
+        """Initialize RADE framework with optimized multi or single GPU support."""
+        
         self.max_pages = max_pages
         self.use_approximate_index = use_approximate_index
         self.batch_size = batch_size
-        
-        if torch.cuda.device_count() > 1:
-            device_map = {
-                "retrieval": "cuda:0",  
-                "qa": "cuda:1"          
+
+        # ===========================
+        # 🔹 Initialize Device Mapping
+        # ===========================
+        num_gpus = torch.cuda.device_count()
+        print(f"Detected {num_gpus} GPU(s)")
+
+        if num_gpus > 1:
+            self.device_map = {
+                "retrieval": "cuda:0",
+                "qa": "cuda:1"
+            }
+        elif num_gpus == 1:
+            self.device_map = {
+                "retrieval": "cuda:0",
+                "qa": "cuda:0"
             }
         else:
-            device_map = {
-                "retrieval": "cuda",  
-                "qa": "cuda"          
+            self.device_map = {
+                "retrieval": "cpu",
+                "qa": "cpu"
             }
-        print(f"Using device map: {device_map}")
 
-        print("Initializing retrieval model...")
-        self.retrieval_model = ColPali.from_pretrained(
-            retrieval_model_name,
-            torch_dtype=torch.bfloat16,
-            device_map={"": device_map["retrieval"]}
-        ).eval()
-            
-        self.retrieval_processor = ColPaliProcessor.from_pretrained(retrieval_model_name)
-        self.retrieval_device = device_map["retrieval"]
-        self.qa_device = device_map["qa"]
+        print(f"Using device map: {self.device_map}")
 
-        print("Initializing QA model and entity extraction models...")
+        self.retrieval_device = self.device_map["retrieval"]
+        self.qa_device = self.device_map["qa"]
 
-        self.qa_model = pipeline("question-answering", model=qa_model_name, device=self.qa_device) 
-        self.entity_extraction_model = GLiNER.from_pretrained(entity_extraction_model, device=self.qa_device)
-       
+        # ===========================
+        # 🔹 Initialize Retrieval Model (ColPali)
+        # ===========================
+        print("Initializing retrieval model (ColPali)...")
+        try:
+            self.retrieval_model = ColPali.from_pretrained(
+                retrieval_model_name,
+                torch_dtype=torch.bfloat16,
+                device_map={"": self.retrieval_device}
+            ).eval()
+            self.retrieval_processor = ColPaliProcessor.from_pretrained(retrieval_model_name)
+            print("✅ Retrieval model initialized successfully.")
+        except Exception as e:
+            print(f"❌ Error initializing retrieval model: {e}")
+            self.retrieval_model = None
+
+        # ===========================
+        # 🔹 Initialize QA Model (Roberta)
+        # ===========================
+        print("Initializing QA model (Roberta)...")
+        try:
+            self.qa_model = AutoModelForQuestionAnswering.from_pretrained(qa_model_name)
+            self.tokenizer = AutoTokenizer.from_pretrained(qa_model_name)
+
+            # Move model to the correct device
+            qa_device = torch.device(self.qa_device)
+            self.qa_model.to(qa_device)
+
+            # Initialize QA pipeline
+            self.qa_pipeline = pipeline(
+                task="question-answering",
+                model=self.qa_model,
+                tokenizer=self.tokenizer,
+                device=0 if "cuda" in self.qa_device else -1  # Ensure correct device type
+            )
+            print("✅ QA model initialized successfully.")
+        except Exception as e:
+            print(f"❌ Error initializing QA model: {e}")
+            self.qa_model = None
+            self.qa_pipeline = None
+
+        # ===========================
+        # 🔹 Initialize Entity Extraction Model (GLiNER)
+        # ===========================
+        print("Initializing entity extraction model (GLiNER)...")
+        try:
+            self.entity_extraction_model = GLiNER.from_pretrained(entity_extraction_model)
+
+            # Ensure GLiNER uses the same device as QA model
+            self.entity_extraction_model.to(qa_device)
+
+            print("✅ Entity extraction model initialized successfully.")
+        except Exception as e:
+            print(f"❌ Error initializing entity extraction model: {e}")
+            self.entity_extraction_model = None
+
         self.index = None
         self.pages: List[DocumentPage] = []
-        print("Models initialized successfully!")
 
+        print("🚀 All models initialized successfully!")
+
+        
     def add_document(self, pdf_path: str, doc_id: str):
         """Add a PDF document to the corpus."""
         print(f"Loading document: {doc_id}")
@@ -193,23 +252,19 @@ class RADE:
             print("Stack trace:", traceback.format_exc())
             return []
 
-    def run_qa_pipeline(self, question: str, retrieved_texts: str) -> List[Dict]:
+    def run_qa_pipeline(self, question: str, retrieved_text: str) -> List[Dict]:
         """
         Run a QA model on retrieved texts.
         
         Args:
             question (str): The question to answer (e.g., "What are the names of the grantors?").
-            retrieved_texts (List[Dict]): A list of retrieved text in JSON format, e.g.,
-                [
-                    {"text": "The grantor is John Doe.", "score": 0.95},
-                    {"text": "Grantor: Alice Johnson", "score": 0.85},
-                    {"text": "The trustee is Bob Smith.", "score": 0.80},
-                ]
+            retrieved_texts (str):  retrieved texts to answer the question.
     
         Returns:
             List[Dict]: List of answers with scores and contexts.
         """
-        qa_result = self.qa_model(question=question, context=retrieved_texts)
+        torch.cuda.empty_cache()
+        qa_result = self.qa_pipeline(question=question, context=retrieved_text)
     
         return qa_result
 
@@ -224,6 +279,7 @@ class RADE:
         Returns:
             List[Dict]: Deduplicated extracted entities.
         """
+        torch.cuda.empty_cache()
         entities = self.entity_extraction_model.predict_entities(retrieved_texts, labels)
         
         # Deduplicate entities by converting to a set of tuples

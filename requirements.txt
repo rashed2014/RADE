@@ -101,3 +101,4 @@ urllib3==2.2.3
 xxhash==3.5.0
 yarl==1.17.1
 nest_asyncio
+databricks-sdk

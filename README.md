@@ -57,13 +57,6 @@ Refer to the provided `RADE_Pipeline.ipynb` notebook for the full workflow demon
 
 ## Citation
 
-Citation:
+We build upon the methods proposed in M3DOCRAG by Jaemin Cho, Debanjan Mahata, Ozan Irsoy, Yujie He, and Mohit Bansal.
 
-```bibtex
-@article{cho2024m3docrag,  
-      title={M3DOCRAG: Multi-modal Retrieval is What You Need for Multi-page Multi-document Understanding},  
-      author={Jaemin Cho and Debanjan Mahata and Ozan Irsoy and Yujie He and Mohit Bansal},  
-      journal={arXiv preprint arXiv:2411.04952},  
-      year={2024}  
-}
 

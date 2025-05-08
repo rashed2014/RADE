@@ -6,13 +6,13 @@ This implementation is inspired by the research ["M3DOCRAG: Multi-modal Retrieva
 
 ## Overview
 
-RADE (Retrieval-Augmented Document Entity Extractor) is a multi-page, multi-document processing framework designed to efficiently process and extract information from large-scale document collections. It combines ColPali-based multi-modal retrieval with encoder-based models for entity extraction and question answering.
+RADE (Retrieval-Augmented Document Entity Extractor) is a multi-page, multi-document processing framework designed to efficiently process and extract information from large-scale document collections. It combines ColBert-based multi-modal retrieval with encoder-based models for entity extraction and question answering.
 
 ---
 
 ## Key Components
 
-- **ColPali Retriever:**  
+- **ColBERT Retriever:**  
   Retrieves relevant document pages using multi-modal embeddings, allowing text-based queries to retrieve image-based documents.
 
 - **FAISS Indexing:**  

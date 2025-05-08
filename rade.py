@@ -1,19 +1,6 @@
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import (
-    AutoProcessor,
-    AutoConfig,
-    AutoModelForSequenceClassification, 
-    AutoTokenizer, 
-    pipeline
-)
-
-from colpali_engine.models import ColPali, ColPaliProcessor
-from pdf2image import convert_from_path
-from qwen_vl_utils import process_vision_info
-from PIL import Image
-import faiss
 import numpy as np
 from typing import List, Tuple, Dict, Any
 from dataclasses import dataclass
@@ -22,37 +9,62 @@ import cmd
 import os
 import traceback
 from gliner import GLiNER
+import os
+import json
+import pandas as pd
+from ragatouille import RAGPretrainedModel
+import fitz
+from transformers import pipeline
+import time
+import re
+from PIL import Image
+import sys
+from utils.azure_doc_intel import*
+from dotenv import load_dotenv
+from tqdm import tqdm
+
+#load .env file
+load_dotenv(dotenv_path=".env")
 
 #wrapper classes
 @dataclass
 class DocumentPage:
-    """Represents a single page from a document with its metadata."""
     doc_id: str
+    doc_name: str
     page_num: int
-    image: Image.Image  
+    text: str
+    is_scanned: bool
+
 
 @dataclass
 class RetrievedPage:
-    """Represents a retrieved page with its relevance score."""
     page: DocumentPage
     score: float
+
 
 #define the RADE class
 class RADE:
     def __init__(
         self,
-        retrieval_model_name: str = "../colpali_model_v1.3",
+        retrieval_model_name: str = "colbert-ir/colbertv2.0",
         qa_model_name: str = "deepset/roberta-base-squad2",  
-        entity_extraction_model: str = "../gliner_model",
+        entity_extraction_model: str = "knowledgator/gliner-multitask-large-v0.5",
         max_pages: int = 4,
         use_approximate_index: bool = True,
         batch_size: int = 4,
         use_flash_attention: bool = False,  
+        index_name: str = None,
+        index_path: str = None,
     ):
         """Initialize M3DOCRAG framework with optimized multi-GPU support."""
         self.max_pages = max_pages
         self.use_approximate_index = use_approximate_index
         self.batch_size = batch_size
+        self.index_name = index_name
+        self.index_path = index_path
+        # use your `key` and `endpoint` environment variables
+        self.key = os.environ.get("key").strip()
+        self.endpoint = os.environ.get("endpoint").strip()
         
         device_map = {
             "retrieval": "cuda:0",  
@@ -61,168 +73,217 @@ class RADE:
         print(f"Using device map: {device_map}")
 
         print("Initializing retrieval model...")
-        self.retrieval_model = ColPali.from_pretrained(
-            retrieval_model_name,
-            torch_dtype=torch.bfloat16,
-            device_map={"": device_map["retrieval"]}
-        ).eval()
-            
-        self.retrieval_processor = ColPaliProcessor.from_pretrained(retrieval_model_name)
+        self.retrieval_model = RAGPretrainedModel.from_pretrained(retrieval_model_name)
         self.retrieval_device = device_map["retrieval"]
         self.qa_device = device_map["qa"]
 
         print("Initializing QA model and entity extraction models...")
+        self.qa_pipeline = pipeline(
+            "question-answering",
+            model=qa_model_name,
+            tokenizer=qa_model_name,
+            device=self.qa_device
+        )
 
-        self.qa_model = pipeline("question-answering", model=qa_model_name, device=self.qa_device) 
         self.entity_extraction_model = GLiNER.from_pretrained(entity_extraction_model, device=self.qa_device)
        
-        self.index = None
+        # self.index = index_name
         self.pages: List[DocumentPage] = []
         print("Models initialized successfully!")
 
+    def is_scanned_page(self, page: fitz.Page) -> bool: #need to handle scanned pages 
+        return len(page.get_text("text").strip()) == 0
+
+
     def add_document(self, pdf_path: str, doc_id: str):
-        """Add a PDF document to the corpus."""
-        print(f"Loading document: {doc_id}")
-        page_images = convert_from_path(pdf_path, dpi=144)
-        for page_num, image in enumerate(page_images):
-            page = DocumentPage(
+        print(f"📄 Loading document: {doc_id}")
+        
+        #set default index name to be the filename of the first pdf
+        if self.index_name is None:
+            self.index_name = pdf_path.split("/")[-1]
+
+        #ensure file exsits
+        try:
+            doc = fitz.open(pdf_path)
+        except Exception as e:
+            print(f"❌ Failed to open PDF '{pdf_path}': {e}")
+            return  # Skip this document
+        try:
+            client = init_docintel_client(self.endpoint, self.key)
+            json_str = parse_pdf(pdf_path, client)
+            parsed_pages = json.loads(json_str)
+        except Exception as e:
+            print(f"⚠️ Azure parsing failed for doc is {doc_id}: {e}")
+            retrun  # exit if parsing fails
+
+        for page in parsed_pages:
+            self.pages.append(DocumentPage(
                 doc_id=doc_id,
-                page_num=page_num,
-                image=image
-            )
-            self.pages.append(page)
-        print(f"Added {len(page_images)} pages from {doc_id}")
+                doc_name=pdf_path.split("/")[-1],
+                page_num=page["page_number"],
+                text=page["content_text"],
+                is_scanned=False  # Since this method parses full PDF with layout, assume it's normalized
+            ))
+
 
     def build_index(self):
         """Build the retrieval index for all pages."""
-        print(f"Building index for {len(self.pages)} pages...")
-        
-        total_batches = (len(self.pages) + self.batch_size - 1) // self.batch_size
-        
-        dataloader = DataLoader(
-            self.pages,
-            batch_size=self.batch_size,
-            shuffle=False,
-            collate_fn=lambda x: self.retrieval_processor.process_images([page.image for page in x])
+        print(f"🔧 Building index for {len(self.pages)} pages...")
+    
+        self.index_path = self.retrieval_model.index(
+            collection=[page.text for page in self.pages],
+            document_metadatas=[
+                {"page": str(page.page_num), "document": page.doc_name} for page in self.pages
+            ],
+            index_name=self.index_name,
+            max_document_length=180,
+            split_documents=True,
+            use_faiss=True,
+            document_ids=[f"{page.doc_name}_page{page.page_num}" for page in self.pages]
         )
+    
+        print(f"✅ Index built: {self.index_path}")
 
-        all_embeddings = []
-        try:
-            for batch_doc in tqdm(dataloader, desc="Building index", total=total_batches):
-                with torch.no_grad():
-                    batch_doc = {
-                        k: v.to(self.retrieval_device, dtype=torch.bfloat16) 
-                        if k == "pixel_values" else v.to(self.retrieval_device)
-                        for k, v in batch_doc.items()
-                    }
-                    
-                    with torch.cuda.device(self.retrieval_device):
-                        torch.cuda.empty_cache()
-                    
-                    embeddings_doc = self.retrieval_model(**batch_doc)
-                    embeddings_doc = embeddings_doc.to(dtype=torch.float32)
-                    embeddings_doc = embeddings_doc.mean(dim=1)
-                    
-                    embeddings_doc = embeddings_doc.cpu()
-                    all_embeddings.extend(list(torch.unbind(embeddings_doc)))
 
-            all_embeddings = np.stack([emb.numpy() for emb in all_embeddings])
-            print(f"Embeddings shape: {all_embeddings.shape}")
-            embedding_dim = all_embeddings.shape[1]
-            n_vectors = all_embeddings.shape[0]
-
-            if self.use_approximate_index and n_vectors >= 156:
-                print("Building approximate index...")
-                quantizer = faiss.IndexFlatIP(embedding_dim)
-                n_centroids = max(1, min(
-                    n_vectors // 40,
-                    int(np.sqrt(n_vectors)),
-                    100
-                ))
-                print(f"Using {n_centroids} centroids for IVF index")
-                self.index = faiss.IndexIVFFlat(
-                    quantizer,
-                    embedding_dim,
-                    n_centroids,
-                    faiss.METRIC_INNER_PRODUCT
-                )
-                self.index.train(all_embeddings)
-            else:
-                print("Building exact index...")
-                self.index = faiss.IndexFlatIP(embedding_dim)
-
-            self.index.add(all_embeddings)
-            print("Index built successfully!")
-            
-        except Exception as e:
-            print(f"Error during index building: {str(e)}")
-            print("Stack trace:", traceback.format_exc())
-            raise
-
-    def retrieve(self, queries: str) -> List[RetrievedPage]:
-        """Retrieve relevant pages."""
-
-        retrieved_pages = [[] for _ in queries]
-        try:
-            ### **Step 1: Retrieve Pages for All Queries**
-            query_batch = self.retrieval_processor.process_queries(queries).to(self.retrieval_device)
-
-            with torch.no_grad():
-                query_batch = {k: v.to(self.retrieval_device) for k, v in query_batch.items()}
-                query_embedding= self.retrieval_model(**query_batch).to(dtype=torch.float32)
-                query_embedding_np = query_embedding.cpu().numpy().mean(axis=1)
-            
-            # Run FAISS search for queries
-            scores, indices = self.index.search(query_embedding_np, self.max_pages)
-            
-            # Store retrieved pages for queries
-            for query_idx, (score_list, index_list) in enumerate(zip(scores, indices)):
-                for score, idx in zip(score_list, index_list):
-                    if idx < len(self.pages):
-                        retrieved_pages[query_idx].append(RetrievedPage(page=self.pages[idx], score=float(score)))
-            return retrieved_pages
-
-        except Exception as e:
-            print(f"Error in retrieval: {str(e)}")
-            print("Stack trace:", traceback.format_exc())
-            return []
-
-    def run_qa_pipeline(self, question: str, retrieved_texts: str) -> List[Dict]:
+    def retrieve(self, query: str, k: int = 5) -> List[RetrievedPage]:
         """
-        Run a QA model on retrieved texts.
-        
-        Args:
-            question (str): The question to answer (e.g., "What are the names of the grantors?").
-            retrieved_texts (List[Dict]): A list of retrieved text in JSON format, e.g.,
-                [
-                    {"text": "The grantor is John Doe.", "score": 0.95},
-                    {"text": "Grantor: Alice Johnson", "score": 0.85},
-                    {"text": "The trustee is Bob Smith.", "score": 0.80},
-                ]
+        Retrieve ColBERT chunks and wrap them in DocumentPage objects.
     
         Returns:
-            List[Dict]: List of answers with scores and contexts.
+            List[RetrievedPage]: Retrieved chunks with preserved text + metadata.
         """
-        qa_result = self.qa_model(question=question, context=retrieved_texts)
+        if not self.index_path:
+            raise ValueError("Index not built. Call build_index() first.")
+    
+        print(f"🔍 Retrieving top-{k} chunks for query: {query}")
+        results = self.retrieval_model.search(query=query, k=k)
+    
+        retrieved_pages = []
+        for r in results:
+            document_id = r.get("document_id", "")
+            doc_name, page_num = None, None
+    
+            # Try to extract from expected format: 'docname.pdf_page5'
+            try:
+                doc_name, page_str = document_id.rsplit("_page", 1)
+                page_num = int(page_str)
+            except Exception:
+                doc_name = document_id
+    
+            doc_page = DocumentPage(
+                doc_id=document_id,
+                doc_name=doc_name,
+                page_num=page_num,
+                text=r["content"],
+                is_scanned=None  # Unknown in this context
+            )
+    
+            retrieved_pages.append(RetrievedPage(
+                page=doc_page,
+                score=r["score"]
+            ))
+    
+        return retrieved_pages
+
+
+    def run_qa_pipeline(self, question: str, retrieved_texts: List[Dict]) -> Dict:
+        """
+        Run the QA model on concatenated retrieved texts.
+    
+        Args:
+            question (str): The question to answer.
+            retrieved_texts (List[Dict]): List of retrieved chunks from the retriever, each with:
+                - 'content': the retrieved passage
+                - 'document_metadata': {'document': ..., 'page': ...}
+    
+        Returns:
+            Dict: {
+                'answer': str,
+                'score': float,
+                'retrieved': List[Dict] (original context chunks with metadata)
+            }
+        """
+        if not retrieved_texts:
+            return {
+                "answer": "[No context retrieved]",
+                "score": 0.0,
+                "retrieved": []
+            }
+    
+        # Clean and concatenate text
+        combined_text = ". ".join(
+            str(r.get("content", "")).replace("\n", " ") for r in retrieved_texts if r.get("content")
+        )
+    
+        # Run QA
+        qa_result = self.qa_pipeline(question=question, context=combined_text)
+    
+        # Attach retrieved contexts with source info
+        qa_result["retrieved"] = [
+            {
+                "content": r.get("content", ""),
+                "document": r.get("document_metadata", {}).get("document", "N/A"),
+                "page": r.get("document_metadata", {}).get("page", "N/A")
+            }
+            for r in retrieved_texts
+        ]
     
         return qa_result
 
-    def extract_entities_with_gliner(self, retrieved_texts: str, labels: List[str]) -> List[Dict]:
+
+    def extract_entities_with_gliner(self, retrieved_texts: List[Dict], labels: List[str], threshold: float = 0.3) -> Dict:
         """
-        Extract entities using GLiNER and remove duplicates.
+        Extract entities using GLiNER, filter by confidence score, and deduplicate.
     
         Args:
-            retrieved_texts (List[Dict]): Retrieved texts.
-            labels (List[str]): Target labels.
+            retrieved_texts (List[Dict]): Retrieved passages with:
+                - 'content': the chunk text
+                - 'document_metadata': {'document': ..., 'page': ...}
+            labels (List[str]): GLiNER entity labels to extract
+            threshold (float): Minimum confidence score to keep an entity
     
         Returns:
-            List[Dict]: Deduplicated extracted entities.
+            Dict: {
+                "entities": [ { "text": ..., "label": ..., "score": ... }, ... ],
+                "retrieved": [ { "content": ..., "document": ..., "page": ... }, ... ]
+            }
         """
-        entities = self.entity_extraction_model.predict_entities(retrieved_texts, labels)
-        
-        # Deduplicate entities by converting to a set of tuples
-        unique_entities = { (entity["text"], entity["label"]) for entity in entities }
+        if not retrieved_texts or not labels:
+            return {"entities": [], "retrieved": []}
     
-        # Convert back to a list of dictionaries
-        deduplicated_entities = [{"text": text, "label": label} for text, label in unique_entities]
-        return deduplicated_entities
+        combined_text = ". ".join(
+            r.get("content", "").replace("\n", " ").replace("_", " ").strip()
+            for r in retrieved_texts if r.get("content")
+        )
+    
+        # Run GLiNER
+        raw_entities = self.entity_extraction_model.predict_entities(combined_text, labels)
+    
+        # Filter by confidence score
+        filtered = [
+            {"text": e["text"], "label": e["label"], "score": e.get("score", 1.0)}
+            for e in raw_entities
+            if e.get("score", 1.0) >= threshold
+        ]
+    
+        # Deduplicate by (text, label)
+        seen = set()
+        deduplicated = []
+        for ent in filtered:
+            key = (ent["text"], ent["label"])
+            if key not in seen:
+                seen.add(key)
+                deduplicated.append(ent)
+    
+        return {
+            "entities": deduplicated,
+            "retrieved": [
+                {
+                    "content": r.get("content", ""),
+                    "document": r.get("document_metadata", {}).get("document", "N/A"),
+                    "page": r.get("document_metadata", {}).get("page", "N/A")
+                }
+                for r in retrieved_texts
+            ]
+        }
+

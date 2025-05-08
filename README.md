@@ -94,12 +94,12 @@ Top-k relevant chunks          |
      +-----------+-------------+
                  |
             RoBERTa QA (Optional)
-
+```
 
 ### 🚀 How to Use RADE
 📁 1. Upload Your Files
 Upload your .pdf document and a query_plan.json file that defines what you want to extract. Example:
-
+```python
 {
   "Who are the Grantors?": {
     "type": "ner",
@@ -110,7 +110,7 @@ Upload your .pdf document and a query_plan.json file that defines what you want 
     "labels": []
   }
 }
-
+```
 ### 🧱 2. Add and Index the Document
 
 rade.add_document("path/to/document.pdf", doc_id="TrustDoc001")
@@ -118,7 +118,7 @@ rade.build_index()
 
 
 ### 🔎 3. Run Queries
-
+```python
 for query, meta in query_plan.items():
     results = rade.retrieve(query, k=5)
 
@@ -126,13 +126,13 @@ for query, meta in query_plan.items():
         qa_result = rade.run_qa_pipeline(query, results)
     else:
         ner_result = rade.extract_entities_with_gliner(results, meta["labels"], threshold=0.3)
-
+```
 
 ### 📊 4. Visualize in Notebook
 
 ```python
 show_query_results(result)
-
+```
 ### 🧪 Citation
 This work is built upon:
 

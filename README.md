@@ -99,7 +99,7 @@ Top-k relevant chunks          |
 ### 🚀 How to Use RADE
 📁 1. Upload Your Files
 Upload your .pdf document and a query_plan.json file that defines what you want to extract. Example:
-```python
+
 {
   "Who are the Grantors?": {
     "type": "ner",
@@ -112,13 +112,13 @@ Upload your .pdf document and a query_plan.json file that defines what you want 
 }
 
 ### 🧱 2. Add and Index the Document
-```python
+
 rade.add_document("path/to/document.pdf", doc_id="TrustDoc001")
 rade.build_index()
 
 
 ### 🔎 3. Run Queries
-```python
+
 for query, meta in query_plan.items():
     results = rade.retrieve(query, k=5)
 

@@ -52,6 +52,9 @@ coverage/
 *.gcno
 *.gcda
 
+# data files
+data/*.*
+
 # Files created by Python tooling
 pip-log.txt
 .env

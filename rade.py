@@ -40,9 +40,10 @@ class RADE:
         retrieval_model_name: str = "colbert-ir/colbertv2.0",
         qa_model_name: str = "deepset/roberta-base-squad2",
         entity_extraction_model: str = "knowledgator/gliner-multitask-large-v0.5",
-        max_pages: int = 4,
-        use_approximate_index: bool = True,
-        batch_size: int = 4,
+        doc_int_key: str = "",
+        doc_int_endpoint: str = "",
+        max_pages: int = 3,
+        batch_size: int = 32,
         use_flash_attention: bool = False,
         index_name: str = None,
         index_path: str = None,
@@ -50,15 +51,20 @@ class RADE:
     ):
         """Initialize RADE framework with retrieval, QA, and entity extraction models."""
         self.max_pages = max_pages
-        self.use_approximate_index = use_approximate_index
         self.batch_size = batch_size
         self.index_name = index_name
         self.index_path = index_path
         self.use_faiss = use_faiss
 
         # Load Azure Document Intelligence credentials
-        self.key = os.environ.get("DOC_INTEL", "").strip()
-        self.endpoint = os.environ.get("ENDPOINT", "").strip()
+        if not doc_int_key or not doc_int_key.strip():
+            raise ValueError("❌ RADE Initialization failed: 'key' must not be empty.")
+        if not doc_int_endpoint or not doc_int_endpoint.strip():
+            raise ValueError("❌ RADE Initialization failed: 'endpoint' must not be empty.")
+        
+        self.doc_int_key = doc_int_key
+        self.doc_int_endpoint = doc_int_endpoint
+        
 
         device_map = {
             "retrieval": "cuda",
@@ -99,7 +105,7 @@ class RADE:
             return
 
         try:
-            client = init_docintel_client(self.endpoint, self.key)
+            client = init_docintel_client(self.doc_int_endpoint, self.doc_int_key)
             json_str = parse_pdf(pdf_path, client)
             parsed_pages = json.loads(json_str)
         except Exception as e:

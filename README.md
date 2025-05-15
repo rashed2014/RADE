@@ -1,6 +1,6 @@
 # RADE: Retrieval-Augmented Document Entity Extractor
 
-**RADE - non-genai ** is a document understanding framework modeled after **retrieval-augmented generation (RAG)** with the flexibility of leveraging Generative or non Generative models.  It is foucsed on efficient entity extraction and question answering capabilities from in context pdf or word documents. It is optimized for in-context **multi-page, multi-document** trust and legal documents, where key information such as grantors, trustees, beneficiaries, and legal metadata must be extracted reliably. The framework can be extended to use similar uses cases involving unstructured contract documents, consumer compaint forms, and etc.
+**RADE - non-genai** is a document understanding framework modeled after **retrieval-augmented generation (RAG)** with the flexibility of leveraging Generative or non Generative models.  It is foucsed on efficient entity extraction and question answering capabilities from in context pdf or word documents. It is optimized for in-context **multi-page, multi-document** trust and legal documents, where key information such as grantors, trustees, beneficiaries, and legal metadata must be extracted reliably. The framework can be extended to use similar uses cases involving unstructured contract documents, consumer compaint forms, and etc.
 
 This implementation is inspired by the research paper:  
 **["M3DOCRAG: Multi-modal Retrieval is What You Need for Multi-page Multi-document Understanding"](https://arxiv.org/abs/2411.04952)**  
